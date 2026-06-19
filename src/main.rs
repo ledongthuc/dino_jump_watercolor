@@ -1,6 +1,6 @@
-// ─── T-Rex Run 3D ────────────────────────────────────────────────────────────
+// ─── Dino Jump Watercolor ─────────────────────────────────────────────────────
 //!
-//! A Chrome dino-game clone built with the **Bevy** game engine (Rust).
+//! A watercolor-themed Chrome dino-game clone built with the **Bevy** game engine (Rust).
 //!
 //! # Architecture
 //!
@@ -49,6 +49,15 @@ mod plugins;
 /// 2. Configures the window (title, size, resizable).
 /// 3. Adds our custom plugins (each one registers its own systems & resources).
 /// 4. Calls `.run()` – this enters Bevy's **game loop** (the Main Loop).
+///
+/// # Build commands
+///
+/// | Scenario                              | Command                             |
+/// |---------------------------------------|-------------------------------------|
+/// | **Fast dev iteration** (dynamic link) | `cargo run --features fast_dev`     |
+/// | **Release build** (optimised runtime) | `cargo run --release`               |
+/// | **Release + fast compile**            | `cargo run --profile release-fast`  |
+/// | **Quick error check**                 | `cargo check`                       |
 fn main() {
     App::new()
         // ── Bevy's built-in plugins ──
@@ -58,7 +67,7 @@ fn main() {
             DefaultPlugins
                 .set(WindowPlugin {
                     primary_window: Some(Window {
-                        title: "T-Rex Run".to_string(),
+                        title: "Dino Jump Watercolor".to_string(),
                         resolution: (
                             constants::INITIAL_WINDOW_WIDTH as u32,
                             constants::INITIAL_WINDOW_HEIGHT as u32,

@@ -1,0 +1,23 @@
+# ─── Fast Rust Compilation ─────────────────────────────────────────────────────
+#
+# These settings speed up Rust compile times by replacing the default system
+# linker (which is single-threaded on macOS) with **lld**, a modern,
+# multi-threaded LLVM-based linker.
+#
+# To install lld:
+#   brew install lld                # macOS
+#   sudo apt install lld            # Linux (Ubuntu/Debian)
+#   sudo dnf install lld            # Linux (Fedora)
+#
+# More info: https://bevyengine.org/learn/quick-start/getting-started/setup/
+
+[target.x86_64-apple-darwin]
+rustflags = ["-Clink-arg=-fuse-ld=/usr/local/bin/ld64.lld"]
+
+# ── Uncomment below for nightly Rust to share generics across crates ──────────
+# [target.x86_64-apple-darwin]
+# rustflags = ["-Clink-arg=-fuse-ld=/usr/local/bin/ld64.lld", "-Zshare-generics"]
+
+# ── Linux with mold linker (faster than lld on Linux) ─────────────────────────
+# [target.x86_64-unknown-linux-gnu]
+# rustflags = ["-Clink-arg=-fuse-ld=mold"]

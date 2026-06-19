@@ -1,8 +1,52 @@
 [package]
-name = "t-rex-run-3d"
+name = "dino_jump_watercolor"
 version = "0.1.0"
 edition = "2024"
+
+# ── Features ───────────────────────────────────────────────────────────────────
+#
+# `fast_dev`   = replaces the standard Bevy renderer plugin with a dynamically-
+#                linked version, dramatically reducing incremental compile times
+#                during development.  Use with:
+#
+#                    cargo run --features fast_dev
+#
+[features]
+fast_dev = ["bevy/dynamic_linking"]
 
 [dependencies]
 bevy = "0.18.1"
 rand = "0.8"
+
+# ── Profiles ───────────────────────────────────────────────────────────────────
+#
+# These settings control *how* Rust compiles your code, not what it compiles.
+
+[profile.dev]
+# Dev profile – already optimised for fast iteration via incremental compilation.
+# No changes needed here.
+
+[profile.release]
+# Release profile – optimised for **runtime speed** and **binary size**.
+#
+# - `lto = "thin"`          enables cross-crate link-time optimisation (faster
+#                            and smaller binary, slightly slower linking).
+# - `codegen-units = 1`     lets the compiler see the whole crate at once,
+#                            producing faster code (but slower compilation).
+# - `strip = "symbols"`     removes debug symbols from the binary (smaller file).
+#
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+[profile.release-fast]
+# A middle-ground release profile: you get most of the runtime speed but still
+# keep fast compilation.  Use with:
+#
+#     cargo build --profile release-fast
+#
+inherits = "release"
+lto = "off"
+codegen-units = 16
+strip = "none"
+
