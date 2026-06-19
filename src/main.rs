@@ -1,4 +1,6 @@
 use bevy::prelude::*;
+use bevy::sprite::Anchor;
+use rand::Rng;
 
 // ─── Components ──────────────────────────────────────────────────────────────
 
@@ -19,6 +21,16 @@ struct Jump {
 #[derive(Component)]
 struct Tree;
 
+/// Marker for trees that have already been scored (dino jumped over them)
+#[derive(Component)]
+struct Scored;
+
+/// Actual pixel size of the tree image (varies per variant)
+#[derive(Component)]
+struct TreeBounds {
+    size: Vec2,
+}
+
 /// Marker for the "Game Over" text entity
 #[derive(Component)]
 struct GameOverText;
@@ -35,6 +47,14 @@ struct Sky;
 #[derive(Component)]
 struct Road;
 
+/// Marker for the score text entity
+#[derive(Component)]
+struct ScoreText;
+
+/// Marker for the speed text entity
+#[derive(Component)]
+struct SpeedText;
+
 // ─── Resources ───────────────────────────────────────────────────────────────
 
 /// Whether the game is currently running (vs. game-over)
@@ -48,7 +68,15 @@ struct TreeSpawner {
     interval: f32,
 }
 
+/// Current speed multiplier (increases as dino jumps over trees)
+#[derive(Resource)]
+struct Speed {
+    multiplier: f32,
+}
 
+/// Current score (number of trees the dino has jumped over)
+#[derive(Resource)]
+struct Score(u32);
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -62,10 +90,9 @@ const SKY_SCROLL_SPEED: f32 = 50.0;
 const TREE_SPAWN_INTERVAL: f32 = 2.2;
 // Dino and tree Y are now computed dynamically from window height
 const DINO_SIZE: Vec2 = Vec2::new(349.0, 200.0);
-const DINO_HITBOX: Vec2 = Vec2::new(279.2, 160.0);  // 80% of DINO_SIZE
+const DINO_HITBOX: Vec2 = Vec2::new(279.2, 160.0); // 80% of DINO_SIZE
 
-const TREE_SIZE: Vec2 = Vec2::new(153.0, 170.0);
-const TREE_HITBOX: Vec2 = Vec2::new(122.4, 136.0);  // 80% of TREE_SIZE
+
 
 const ROAD_IMAGE_WIDTH: f32 = 1536.0;
 const ROAD_IMAGE_HEIGHT: f32 = 87.0;
@@ -87,11 +114,12 @@ fn main() {
             ..Default::default()
         }))
         .insert_resource(GameRunning(true))
+        .insert_resource(Speed { multiplier: 1.0 })
+        .insert_resource(Score(0))
         .insert_resource(TreeSpawner {
             timer: 1.5,
             interval: TREE_SPAWN_INTERVAL,
         })
-        
         .add_systems(Startup, setup)
         .add_systems(
             Update,
@@ -101,6 +129,7 @@ fn main() {
                 spawn_trees,
                 move_trees,
                 move_road,
+                score_trees,
                 check_collisions,
                 show_game_over,
                 restart_game,
@@ -108,6 +137,7 @@ fn main() {
                 update_sky_y,
                 update_road_y,
                 update_dino_y,
+                update_hud_text,
             )
                 .chain(),
         )
@@ -156,6 +186,38 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, windows: Query<
             Sky,
         ));
     }
+
+    // Score text (top-left)
+    let score_x = -window.width() / 2.0 + 10.0;
+    let score_y = window.height() / 2.0 - 15.0;
+    commands.spawn((
+        Text2d::new("Score: 0"),
+        TextFont {
+            font_size: 28.0,
+            ..Default::default()
+        },
+        TextColor(Color::srgb(1.0, 1.0, 1.0)),
+        TextLayout::new_with_justify(Justify::Left),
+        Anchor::TOP_LEFT,
+        Transform::from_xyz(score_x, score_y, 10.0),
+        ScoreText,
+    ));
+
+    // Speed text (top-left, below score)
+    let speed_x = -window.width() / 2.0 + 10.0;
+    let speed_y = window.height() / 2.0 - 45.0;
+    commands.spawn((
+        Text2d::new("Speed: 1.00x"),
+        TextFont {
+            font_size: 28.0,
+            ..Default::default()
+        },
+        TextColor(Color::srgb(1.0, 1.0, 1.0)),
+        TextLayout::new_with_justify(Justify::Left),
+        Anchor::TOP_LEFT,
+        Transform::from_xyz(speed_x, speed_y, 10.0),
+        SpeedText,
+    ));
 
     // Dino character
     commands.spawn((
@@ -244,26 +306,40 @@ fn spawn_trees(
     }
 }
 
-/// Create a single tree using the tree.png sprite
+/// Pick a random tree image and return (handle, native pixel size)
+fn random_tree(asset_server: &Res<AssetServer>) -> (Handle<Image>, Vec2) {
+    let (name, size) = match rand::thread_rng().gen_range(1..=3) {
+        1 => ("tree1.png", Vec2::new(153.0, 170.0)),
+        2 => ("tree2.png", Vec2::new(245.0, 170.0)),
+        3 => ("tree3.png", Vec2::new(153.0, 222.0)),
+        _ => unreachable!(),
+    };
+    (asset_server.load(name), size)
+}
+
+/// Create a single tree using a random tree sprite
 fn spawn_one_tree(commands: &mut Commands, asset_server: &Res<AssetServer>, window: &Window) {
     let tree_x = 900.0;
-    let tree_y = -window.height() / 2.0 + 30.0 + TREE_SIZE.y / 2.0;
+    let (image, size) = random_tree(asset_server);
+    let tree_y = -window.height() / 2.0 + 30.0 + size.y / 2.0;
 
     commands.spawn((
         Sprite {
-            image: asset_server.load("tree.png"),
-            custom_size: Some(TREE_SIZE),
+            image,
             ..Default::default()
         },
         Transform::from_xyz(tree_x, tree_y, 0.0),
         Tree,
+        TreeBounds { size },
     ));
 }
+
 
 /// Move all road segments from right to left and wrap them around
 fn move_road(
     time: Res<Time>,
     game: Res<GameRunning>,
+    speed: Res<Speed>,
     windows: Query<&Window>,
     mut query: Query<&mut Transform, With<Road>>,
 ) {
@@ -278,7 +354,7 @@ fn move_road(
 
     // First pass: move all segments
     for mut transform in query.iter_mut() {
-        transform.translation.x -= TREE_SPEED * time.delta_secs();
+        transform.translation.x -= TREE_SPEED * speed.multiplier * time.delta_secs();
     }
 
     // Find the rightmost segment AFTER movement
@@ -315,10 +391,7 @@ fn update_dino_y(
 }
 
 /// Keep the road at the bottom of the window when resized
-fn update_road_y(
-    windows: Query<&Window>,
-    mut query: Query<&mut Transform, With<Road>>,
-) {
+fn update_road_y(windows: Query<&Window>, mut query: Query<&mut Transform, With<Road>>) {
     let window = match windows.single() {
         Ok(w) => w,
         Err(_) => return,
@@ -333,13 +406,42 @@ fn update_road_y(
 fn move_trees(
     time: Res<Time>,
     game: Res<GameRunning>,
+    speed: Res<Speed>,
     mut query: Query<&mut Transform, With<Tree>>,
 ) {
     if !game.0 {
         return;
     }
     for mut transform in query.iter_mut() {
-        transform.translation.x -= TREE_SPEED * time.delta_secs();
+        transform.translation.x -= TREE_SPEED * speed.multiplier * time.delta_secs();
+    }
+}
+
+/// Detect when a tree has passed behind the dino and increase speed
+fn score_trees(
+    mut commands: Commands,
+    mut speed: ResMut<Speed>,
+    mut score: ResMut<Score>,
+    dino_query: Query<&Transform, (With<Dino>, Without<Tree>)>,
+    tree_query: Query<(Entity, &Transform, &TreeBounds), (With<Tree>, Without<Scored>)>,
+) {
+    let dino_tf = match dino_query.single() {
+        Ok(t) => t,
+        Err(_) => return,
+    };
+
+    // Dino left edge (the tree is scored when it passes behind the dino)
+    let dino_left = dino_tf.translation.x - DINO_HITBOX.x / 2.0;
+
+    for (entity, tree_tf, bounds) in tree_query.iter() {
+        // Tree right edge (80% hitbox of its native size)
+        let tree_hitbox_x = bounds.size.x * 0.8;
+        if tree_tf.translation.x + tree_hitbox_x / 2.0 < dino_left {
+            // Tree has passed behind the dino — score it and speed up
+            commands.entity(entity).insert(Scored);
+            speed.multiplier += 0.05;
+            score.0 += 1;
+        }
     }
 }
 
@@ -347,7 +449,7 @@ fn move_trees(
 fn check_collisions(
     mut game: ResMut<GameRunning>,
     dino_query: Query<&Transform, (With<Dino>, Without<Tree>)>,
-    tree_query: Query<&Transform, (With<Tree>, Without<Dino>)>,
+    tree_query: Query<(&Transform, &TreeBounds), (With<Tree>, Without<Dino>)>,
 ) {
     if !game.0 {
         return;
@@ -363,11 +465,10 @@ fn check_collisions(
     let dino_min = dino_tf.translation.truncate() - dino_half;
     let dino_max = dino_tf.translation.truncate() + dino_half;
 
-    // Tree bounding box (use the hitbox size, 80% of sprite)
-    let tree_size = TREE_HITBOX;
-    let tree_half = tree_size / 2.0;
-
-    for tree_tf in tree_query.iter() {
+    for (tree_tf, bounds) in tree_query.iter() {
+        // Tree hitbox (80% of its native size)
+        let tree_hitbox = bounds.size * 0.8;
+        let tree_half = tree_hitbox / 2.0;
         let tree_center = tree_tf.translation.truncate();
         let tree_min = tree_center - tree_half;
         let tree_max = tree_center + tree_half;
@@ -418,7 +519,7 @@ fn show_game_over(
             font_size: 28.0,
             ..Default::default()
         },
-        TextColor(Color::srgb(0.9, 0.9, 0.9)),
+        TextColor(Color::srgb(0.0, 0.0, 0.0)),
         Transform::from_xyz(0.0, 20.0, 10.0),
         RestartText,
     ));
@@ -430,10 +531,14 @@ fn restart_game(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut game: ResMut<GameRunning>,
     mut spawner: ResMut<TreeSpawner>,
+    mut speed: ResMut<Speed>,
+    mut score: ResMut<Score>,
     tree_query: Query<Entity, With<Tree>>,
     road_query: Query<Entity, With<Road>>,
     game_over_query: Query<Entity, With<GameOverText>>,
     restart_query: Query<Entity, With<RestartText>>,
+    score_text_query: Query<Entity, With<ScoreText>>,
+    speed_text_query: Query<Entity, With<SpeedText>>,
     asset_server: Res<AssetServer>,
     windows: Query<&Window>,
 ) {
@@ -462,9 +567,41 @@ fn restart_game(
         commands.entity(entity).despawn();
     }
 
-    // Reset spawner
+    // Reset spawner and speed
     spawner.timer = 1.5;
     spawner.interval = TREE_SPAWN_INTERVAL;
+    speed.multiplier = 1.0;
+
+    // Re-spawn HUD (score + speed texts)
+    let window = windows.single().expect("expected a window");
+    let score_x = -window.width() / 2.0 + 10.0;
+    let score_y = window.height() / 2.0 - 15.0;
+    commands.spawn((
+        Text2d::new("Score: 0"),
+        TextFont {
+            font_size: 28.0,
+            ..Default::default()
+        },
+        TextColor(Color::srgb(1.0, 1.0, 1.0)),
+        TextLayout::new_with_justify(Justify::Left),
+        Anchor::TOP_LEFT,
+        Transform::from_xyz(score_x, score_y, 10.0),
+        ScoreText,
+    ));
+    let speed_x = -window.width() / 2.0 + 10.0;
+    let speed_y = window.height() / 2.0 - 45.0;
+    commands.spawn((
+        Text2d::new("Speed: 1.00x"),
+        TextFont {
+            font_size: 28.0,
+            ..Default::default()
+        },
+        TextColor(Color::srgb(1.0, 1.0, 1.0)),
+        TextLayout::new_with_justify(Justify::Left),
+        Anchor::TOP_LEFT,
+        Transform::from_xyz(speed_x, speed_y, 10.0),
+        SpeedText,
+    ));
 
     // Re-spawn road segments at their initial positions
     let window = windows.single().expect("expected a window");
@@ -485,6 +622,17 @@ fn restart_game(
         ));
     }
 
+    // Despawn HUD texts
+    for entity in score_text_query.iter() {
+        commands.entity(entity).despawn();
+    }
+    for entity in speed_text_query.iter() {
+        commands.entity(entity).despawn();
+    }
+
+    // Reset score
+    score.0 = 0;
+
     // Resume game
     game.0 = true;
 }
@@ -493,6 +641,7 @@ fn restart_game(
 fn move_sky(
     time: Res<Time>,
     game: Res<GameRunning>,
+    speed: Res<Speed>,
     windows: Query<&Window>,
     mut query: Query<&mut Transform, With<Sky>>,
 ) {
@@ -507,7 +656,7 @@ fn move_sky(
 
     // First pass: move all segments
     for mut transform in query.iter_mut() {
-        transform.translation.x -= SKY_SCROLL_SPEED * time.delta_secs();
+        transform.translation.x -= SKY_SCROLL_SPEED * speed.multiplier * time.delta_secs();
     }
 
     // Find the rightmost segment AFTER movement
@@ -525,10 +674,7 @@ fn move_sky(
 }
 
 /// Keep the sky vertically centered and scaled to window height when resized.
-fn update_sky_y(
-    windows: Query<&Window>,
-    mut query: Query<&mut Sprite, With<Sky>>,
-) {
+fn update_sky_y(windows: Query<&Window>, mut query: Query<&mut Sprite, With<Sky>>) {
     let window = match windows.single() {
         Ok(w) => w,
         Err(_) => return,
@@ -536,5 +682,39 @@ fn update_sky_y(
     let win_h = window.height();
     for mut sprite in query.iter_mut() {
         sprite.custom_size = Some(Vec2::new(SKY_IMAGE_WIDTH, win_h));
+    }
+}
+
+/// Update score and speed HUD text content and position (top-right).
+fn update_hud_text(
+    windows: Query<&Window>,
+    score: Res<Score>,
+    speed: Res<Speed>,
+    mut score_text_query: Query<&mut Text2d, (With<ScoreText>, Without<SpeedText>)>,
+    mut speed_text_query: Query<&mut Text2d, (With<SpeedText>, Without<ScoreText>)>,
+    mut score_tf_query: Query<&mut Transform, (With<ScoreText>, Without<SpeedText>)>,
+    mut speed_tf_query: Query<&mut Transform, (With<SpeedText>, Without<ScoreText>)>,
+) {
+    let window = match windows.single() {
+        Ok(w) => w,
+        Err(_) => return,
+    };
+
+    // Update score text
+    if let Ok(mut text) = score_text_query.single_mut() {
+        text.0 = format!("Score: {}", score.0);
+    }
+    if let Ok(mut tf) = score_tf_query.single_mut() {
+        tf.translation.x = -window.width() / 2.0 + 10.0;
+        tf.translation.y = window.height() / 2.0 - 15.0;
+    }
+
+    // Update speed text
+    if let Ok(mut text) = speed_text_query.single_mut() {
+        text.0 = format!("Speed: {:.2}x", speed.multiplier);
+    }
+    if let Ok(mut tf) = speed_tf_query.single_mut() {
+        tf.translation.x = -window.width() / 2.0 + 10.0;
+        tf.translation.y = window.height() / 2.0 - 45.0;
     }
 }
