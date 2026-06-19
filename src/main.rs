@@ -8,6 +8,49 @@ use rand::Rng;
 #[derive(Component)]
 struct Dino;
 
+/// Pixel-perfect alpha mask loaded from image data
+#[derive(Component)]
+struct PixelMask {
+    width: u32,
+    height: u32,
+    /// One byte per pixel: 1 = opaque (non-transparent), 0 = transparent
+    data: Vec<u8>,
+}
+
+impl PixelMask {
+    fn from_image(image: &Image) -> Self {
+        let width = image.texture_descriptor.size.width;
+        let height = image.texture_descriptor.size.height;
+        let mut data = vec![0u8; (width * height) as usize];
+
+        if let Some(raw_data) = &image.data {
+            for y in 0..height {
+                for x in 0..width {
+                    // RGBA format: 4 bytes per pixel, alpha at offset 3
+                    let pixel_idx = ((y * width + x) * 4) as usize;
+                    if pixel_idx + 3 < raw_data.len() && raw_data[pixel_idx + 3] > 0 {
+                        data[(y * width + x) as usize] = 1;
+                    }
+                }
+            }
+        }
+
+        PixelMask {
+            width,
+            height,
+            data,
+        }
+    }
+
+    /// Check if pixel at (x, y) in local image coordinates is opaque
+    fn is_opaque(&self, x: i32, y: i32) -> bool {
+        if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
+            return false;
+        }
+        self.data[(y as u32 * self.width + x as u32) as usize] != 0
+    }
+}
+
 /// Jump physics
 #[derive(Component)]
 struct Jump {
@@ -90,7 +133,7 @@ const SKY_SCROLL_SPEED: f32 = 350.0;
 const TREE_SPAWN_INTERVAL: f32 = 2.2;
 // Dino and tree Y are now computed dynamically from window height
 const DINO_SIZE: Vec2 = Vec2::new(349.0, 200.0);
-const DINO_HITBOX: Vec2 = Vec2::new(279.2, 160.0); // 80% of DINO_SIZE
+// Full sprite size (used for AABB pre-check before pixel-perfect collision)
 
 
 
@@ -138,6 +181,7 @@ fn main() {
                 update_road_y,
                 update_dino_y,
                 update_hud_text,
+                load_masks,
             )
                 .chain(),
         )
@@ -146,7 +190,7 @@ fn main() {
 
 // ─── Startup ─────────────────────────────────────────────────────────────────
 
-fn setup(mut commands: Commands, asset_server: Res<AssetServer>, windows: Query<&Window>) {
+fn setup(mut commands: Commands, asset_server: Res<AssetServer>, images: Res<Assets<Image>>, windows: Query<&Window>) {
     commands.spawn((Camera2d, Camera::default()));
 
     let window = windows.single().expect("expected a window");
@@ -220,9 +264,12 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, windows: Query<
     ));
 
     // Dino character
-    commands.spawn((
+    let dino_handle: Handle<Image> = asset_server.load("dino.png");
+    let dino_mask = images.get(&dino_handle).map(PixelMask::from_image);
+
+    let mut dino_entity = commands.spawn((
         Sprite {
-            image: asset_server.load("dino.png"),
+            image: dino_handle,
             custom_size: Some(DINO_SIZE),
             ..Default::default()
         },
@@ -235,6 +282,9 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, windows: Query<
             is_jumping: false,
         },
     ));
+    if let Some(mask) = dino_mask {
+        dino_entity.insert(mask);
+    }
 }
 
 // ─── Systems ─────────────────────────────────────────────────────────────────
@@ -287,6 +337,7 @@ fn spawn_trees(
     game: Res<GameRunning>,
     mut spawner: ResMut<TreeSpawner>,
     asset_server: Res<AssetServer>,
+    images: Res<Assets<Image>>,
     windows: Query<&Window>,
 ) {
     if !game.0 {
@@ -301,7 +352,7 @@ fn spawn_trees(
         spawner.interval = TREE_SPAWN_INTERVAL + (rand::random::<f32>() - 0.5) * 0.8;
 
         if let Ok(window) = windows.single() {
-            spawn_one_tree(&mut commands, &asset_server, window);
+            spawn_one_tree(&mut commands, &asset_server, &images, window);
         }
     }
 }
@@ -318,12 +369,19 @@ fn random_tree(asset_server: &Res<AssetServer>) -> (Handle<Image>, Vec2) {
 }
 
 /// Create a single tree using a random tree sprite
-fn spawn_one_tree(commands: &mut Commands, asset_server: &Res<AssetServer>, window: &Window) {
+fn spawn_one_tree(
+    commands: &mut Commands,
+    asset_server: &Res<AssetServer>,
+    images: &Res<Assets<Image>>,
+    window: &Window,
+) {
     let tree_x = 900.0;
     let (image, size) = random_tree(asset_server);
     let tree_y = -window.height() / 2.0 + 30.0 + size.y / 2.0;
 
-    commands.spawn((
+    let tree_mask = images.get(&image).map(PixelMask::from_image);
+
+    let mut entity = commands.spawn((
         Sprite {
             image,
             ..Default::default()
@@ -332,6 +390,28 @@ fn spawn_one_tree(commands: &mut Commands, asset_server: &Res<AssetServer>, wind
         Tree,
         TreeBounds { size },
     ));
+    if let Some(mask) = tree_mask {
+        entity.insert(mask);
+    }
+}
+
+/// Load pixel masks for any entities that were spawned before their images were ready.
+fn load_masks(
+    mut commands: Commands,
+    images: Res<Assets<Image>>,
+    dino_query: Query<(Entity, &Sprite), (With<Dino>, Without<PixelMask>)>,
+    tree_query: Query<(Entity, &Sprite), (With<Tree>, Without<PixelMask>)>,
+) {
+    for (entity, sprite) in dino_query.iter() {
+        if let Some(image) = images.get(&sprite.image) {
+            commands.entity(entity).insert(PixelMask::from_image(image));
+        }
+    }
+    for (entity, sprite) in tree_query.iter() {
+        if let Some(image) = images.get(&sprite.image) {
+            commands.entity(entity).insert(PixelMask::from_image(image));
+        }
+    }
 }
 
 
@@ -431,12 +511,12 @@ fn score_trees(
     };
 
     // Dino left edge (the tree is scored when it passes behind the dino)
-    let dino_left = dino_tf.translation.x - DINO_HITBOX.x / 2.0;
+    // Use the dino's non-transparent left edge (offset from center)
+    let dino_left = dino_tf.translation.x - DINO_SIZE.x / 2.0;
 
     for (entity, tree_tf, bounds) in tree_query.iter() {
-        // Tree right edge (80% hitbox of its native size)
-        let tree_hitbox_x = bounds.size.x * 0.8;
-        if tree_tf.translation.x + tree_hitbox_x / 2.0 < dino_left {
+        // Tree right edge (use full sprite size for scoring)
+        if tree_tf.translation.x + bounds.size.x / 2.0 < dino_left {
             // Tree has passed behind the dino — score it and speed up
             commands.entity(entity).insert(Scored);
             speed.multiplier += 0.05;
@@ -445,42 +525,125 @@ fn score_trees(
     }
 }
 
-/// AABB collision between dino and every tree
+/// Check if two rectangles overlap (AABB fast rejection)
+fn aabb_overlap(
+    dino_center: Vec2, dino_size: Vec2,
+    tree_center: Vec2, tree_size: Vec2,
+) -> bool {
+    let dino_half = dino_size / 2.0;
+    let tree_half = tree_size / 2.0;
+    let dino_min = dino_center - dino_half;
+    let dino_max = dino_center + dino_half;
+    let tree_min = tree_center - tree_half;
+    let tree_max = tree_center + tree_half;
+
+    dino_min.x < tree_max.x
+        && dino_max.x > tree_min.x
+        && dino_min.y < tree_max.y
+        && dino_max.y > tree_min.y
+}
+
+/// Pixel-perfect collision check using alpha masks.
+/// Returns true if any overlapping pixel position has non-transparent alpha in BOTH sprites.
+fn pixel_perfect_collision(
+    dino_tf: &Transform,
+    dino_size: Vec2,
+    dino_mask: &PixelMask,
+    tree_tf: &Transform,
+    tree_size: Vec2,
+    tree_mask: &PixelMask,
+) -> bool {
+    let dino_half = dino_size / 2.0;
+    let tree_half = tree_size / 2.0;
+
+    let dino_min = dino_tf.translation.truncate() - dino_half;
+    let dino_max = dino_tf.translation.truncate() + dino_half;
+    let tree_min = tree_tf.translation.truncate() - tree_half;
+    let tree_max = tree_tf.translation.truncate() + tree_half;
+
+    // Compute the overlap region in world space
+    let overlap_min_x = dino_min.x.max(tree_min.x) as i32;
+    let overlap_max_x = dino_max.x.min(tree_max.x) as i32;
+    let overlap_min_y = dino_min.y.max(tree_min.y) as i32;
+    let overlap_max_y = dino_max.y.min(tree_max.y) as i32;
+
+    // Image pixel (0,0) maps to top-left corner of the sprite in world space.
+    // In Bevy's y-up coordinate system, the top of the sprite is at (center.y + half_height).
+    let dino_left = (dino_tf.translation.x - dino_half.x) as i32;
+    let dino_top = (dino_tf.translation.y + dino_half.y) as i32;
+    let tree_left = (tree_tf.translation.x - tree_half.x) as i32;
+    let tree_top = (tree_tf.translation.y + tree_half.y) as i32;
+
+    for px in overlap_min_x..=overlap_max_x {
+        for py in overlap_min_y..=overlap_max_y {
+            // Convert world coordinates to image pixel coordinates
+            // Image x = world_x - left_edge
+            // Image y = top_edge - world_y  (y is flipped: image origin is top-left)
+            let dx = px - dino_left;
+            let dy = dino_top - py;
+            let tx = px - tree_left;
+            let ty = tree_top - py;
+
+            if dino_mask.is_opaque(dx, dy) && tree_mask.is_opaque(tx, ty) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+/// Collision detection: AABB pre-check + pixel-perfect alpha mask check.
 fn check_collisions(
     mut game: ResMut<GameRunning>,
-    dino_query: Query<&Transform, (With<Dino>, Without<Tree>)>,
-    tree_query: Query<(&Transform, &TreeBounds), (With<Tree>, Without<Dino>)>,
+    dino_query: Query<(&Transform, Option<&PixelMask>), (With<Dino>, Without<Tree>)>,
+    tree_query: Query<(&Transform, &TreeBounds, Option<&PixelMask>), (With<Tree>, Without<Dino>)>,
 ) {
     if !game.0 {
         return;
     }
 
-    let dino_tf = match dino_query.single() {
+    let (dino_tf, dino_mask_opt) = match dino_query.single() {
         Ok(t) => t,
         Err(_) => return,
     };
+    let dino_center = dino_tf.translation.truncate();
 
-    // Dino AABB (use the hitbox size, 80% of sprite)
-    let dino_half = DINO_HITBOX / 2.0;
-    let dino_min = dino_tf.translation.truncate() - dino_half;
-    let dino_max = dino_tf.translation.truncate() + dino_half;
-
-    for (tree_tf, bounds) in tree_query.iter() {
-        // Tree hitbox (80% of its native size)
-        let tree_hitbox = bounds.size * 0.8;
-        let tree_half = tree_hitbox / 2.0;
+    for (tree_tf, bounds, tree_mask_opt) in tree_query.iter() {
         let tree_center = tree_tf.translation.truncate();
-        let tree_min = tree_center - tree_half;
-        let tree_max = tree_center + tree_half;
+        let tree_size = bounds.size;
 
-        // AABB overlap test
-        if dino_min.x < tree_max.x
-            && dino_max.x > tree_min.x
-            && dino_min.y < tree_max.y
-            && dino_max.y > tree_min.y
-        {
-            game.0 = false;
-            break;
+        // Phase 1: AABB pre-check using full sprite sizes (fast rejection)
+        if !aabb_overlap(dino_center, DINO_SIZE, tree_center, tree_size) {
+            continue;
+        }
+
+        // Phase 2: Pixel-perfect check using alpha masks
+        if let (Some(dino_mask), Some(tree_mask)) = (dino_mask_opt, tree_mask_opt) {
+            if pixel_perfect_collision(
+                dino_tf, DINO_SIZE, dino_mask,
+                tree_tf, tree_size, tree_mask,
+            ) {
+                game.0 = false;
+                return;
+            }
+        } else {
+            // Fallback when masks are not loaded yet: use tighter AABB (80%)
+            let dino_half = (DINO_SIZE * 0.8) / 2.0;
+            let tree_half = (tree_size * 0.8) / 2.0;
+            let dino_min = dino_center - dino_half;
+            let dino_max = dino_center + dino_half;
+            let tree_min = tree_center - tree_half;
+            let tree_max = tree_center + tree_half;
+
+            if dino_min.x < tree_max.x
+                && dino_max.x > tree_min.x
+                && dino_min.y < tree_max.y
+                && dino_max.y > tree_min.y
+            {
+                game.0 = false;
+                return;
+            }
         }
     }
 }
@@ -572,6 +735,25 @@ fn restart_game(
     spawner.interval = TREE_SPAWN_INTERVAL;
     speed.multiplier = 1.0;
 
+    // Re-spawn road segments at their initial positions
+    let window = windows.single().expect("expected a window");
+    let road_y = -window.height() / 2.0 + ROAD_IMAGE_HEIGHT / 2.0;
+    let road_texture: Handle<Image> = asset_server.load("road.png");
+    let road_count = ROAD_SEGMENTS;
+    let half_total_width = (road_count as f32 * ROAD_IMAGE_WIDTH) / 2.0;
+    for i in 0..road_count {
+        let x = -half_total_width + ROAD_IMAGE_WIDTH / 2.0 + i as f32 * ROAD_IMAGE_WIDTH;
+        commands.spawn((
+            Sprite {
+                image: road_texture.clone(),
+                custom_size: Some(Vec2::new(ROAD_IMAGE_WIDTH, ROAD_IMAGE_HEIGHT)),
+                ..Default::default()
+            },
+            Transform::from_xyz(x, road_y, -0.5),
+            Road,
+        ));
+    }
+
     // Re-spawn HUD (score + speed texts)
     let window = windows.single().expect("expected a window");
     let score_x = -window.width() / 2.0 + 10.0;
@@ -602,25 +784,6 @@ fn restart_game(
         Transform::from_xyz(speed_x, speed_y, 10.0),
         SpeedText,
     ));
-
-    // Re-spawn road segments at their initial positions
-    let window = windows.single().expect("expected a window");
-    let road_y = -window.height() / 2.0 + ROAD_IMAGE_HEIGHT / 2.0;
-    let road_texture: Handle<Image> = asset_server.load("road.png");
-    let road_count = ROAD_SEGMENTS;
-    let half_total_width = (road_count as f32 * ROAD_IMAGE_WIDTH) / 2.0;
-    for i in 0..road_count {
-        let x = -half_total_width + ROAD_IMAGE_WIDTH / 2.0 + i as f32 * ROAD_IMAGE_WIDTH;
-        commands.spawn((
-            Sprite {
-                image: road_texture.clone(),
-                custom_size: Some(Vec2::new(ROAD_IMAGE_WIDTH, ROAD_IMAGE_HEIGHT)),
-                ..Default::default()
-            },
-            Transform::from_xyz(x, road_y, -0.5),
-            Road,
-        ));
-    }
 
     // Despawn HUD texts
     for entity in score_text_query.iter() {
