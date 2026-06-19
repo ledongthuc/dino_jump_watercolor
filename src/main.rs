@@ -86,7 +86,7 @@ const INITIAL_WINDOW_WIDTH: f32 = 1536.0;
 const INITIAL_WINDOW_HEIGHT: f32 = 1024.0;
 
 const TREE_SPEED: f32 = 700.0;
-const SKY_SCROLL_SPEED: f32 = 50.0;
+const SKY_SCROLL_SPEED: f32 = 350.0;
 const TREE_SPAWN_INTERVAL: f32 = 2.2;
 // Dino and tree Y are now computed dynamically from window height
 const DINO_SIZE: Vec2 = Vec2::new(349.0, 200.0);
