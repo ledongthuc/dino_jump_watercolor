@@ -34,12 +34,12 @@
 use bevy::prelude::*;
 
 // Declare our top-level modules.
-mod constants;
-mod components;
-mod resources;
-mod pixel_mask;
 mod collision;
+mod components;
+mod constants;
+mod pixel_mask;
 mod plugins;
+mod resources;
 
 /// Entry point – the first function that runs when the game starts.
 ///
@@ -64,21 +64,19 @@ fn main() {
         // `DefaultPlugins` includes: renderer, audio, input, windowing, asset
         // system, and more. We override the Window settings here.
         .add_plugins(
-            DefaultPlugins
-                .set(WindowPlugin {
-                    primary_window: Some(Window {
-                        title: "Dino Jump Watercolor".to_string(),
-                        resolution: (
-                            constants::INITIAL_WINDOW_WIDTH as u32,
-                            constants::INITIAL_WINDOW_HEIGHT as u32,
-                        )
-                            .into(),
-                        resizable: true,
-                        ..Default::default()
-                    }),
+            DefaultPlugins.set(WindowPlugin {
+                primary_window: Some(Window {
+                    title: "Dino Jump Watercolor".to_string(),
+                    resolution: (
+                        constants::INITIAL_WINDOW_WIDTH as u32,
+                        constants::INITIAL_WINDOW_HEIGHT as u32,
+                    )
+                        .into(),
+                    resizable: false,
                     ..Default::default()
-                })
-                // Optional: disable the default Bevy logo splash screen.
+                }),
+                ..Default::default()
+            }), // Optional: disable the default Bevy logo splash screen.
                 // .set(ImagePlugin::default_nearest())
         )
         // ── Our custom plugins ──
@@ -86,12 +84,12 @@ fn main() {
         // The order here doesn't matter – Bevy's schedule runs systems based
         // on their dependencies, not the plugin registration order.
         .add_plugins((
-            plugins::GamePlugin,   // Resources + collision + game-over + restart
-            plugins::DinoPlugin,   // Dino entity + jumping + gravity
-            plugins::TreePlugin,   // Tree spawning + movement + scoring
-            plugins::RoadPlugin,   // Road scrolling
-            plugins::SkyPlugin,    // Parallax sky
-            plugins::HudPlugin,    // Score / speed HUD
+            plugins::GamePlugin, // Resources + collision + game-over + restart
+            plugins::DinoPlugin, // Dino entity + jumping + gravity
+            plugins::TreePlugin, // Tree spawning + movement + scoring
+            plugins::RoadPlugin, // Road scrolling
+            plugins::SkyPlugin,  // Parallax sky
+            plugins::HudPlugin,  // Score / speed HUD
         ))
         .run();
 }
